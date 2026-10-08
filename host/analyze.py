@@ -24,7 +24,7 @@ def load(run):
         elif a[0] == 'I':
             info = ' '.join(a[1:])
         elif a[0] == 'R' and a[6] == '1':
-            R.append(dict(t=float(a[2]), ts=int(a[3]), sz=int(a[4]), key=int(a[5])))
+            R.append(dict(tf=float(a[1]), t=float(a[2]), ts=int(a[3]), sz=int(a[4]), key=int(a[5])))
         elif a[0] == 'S':
             S.append(dict(t0=float(a[1]), t1=float(a[2]), v=int(a[3])))
         elif a[0] == 'W' and float(a[3]) > 0:
@@ -73,7 +73,8 @@ def main():
             continue
         mid = (y0 + y1) / 2
         first = next(r for r in post if (r['y'] - mid) * (y1 - y0) > 0)
-        d = dict(dir='up' if y1 > y0 else 'down', loopback=(first['t'] - s['t0']) * 1e3)
+        d = dict(dir='up' if y1 > y0 else 'down', loopback=(first['t'] - s['t0']) * 1e3,
+                 first_pkt=(first['tf'] - s['t0']) * 1e3)
         if W:
             w = W[int(np.argmin(np.abs(wt - first['t'])))]
             d['stamp'] = (w['prft'] - s['t0']) * 1e3
@@ -84,11 +85,15 @@ def main():
         if not v:
             continue
         lb = np.array([r['loopback'] for r in v])
-        line = f'{dr:>4} n={len(v):2d}  write->loopback  min {lb.min():5.1f}  p50 {np.median(lb):5.1f}  max {lb.max():5.1f} ms'
+        fp = np.array([r['first_pkt'] for r in v])
+        line = (f'{dr:>4} n={len(v):2d}  write->loopback  min {lb.min():5.1f}  p50 {np.median(lb):5.1f}  max {lb.max():5.1f} ms'
+                f'  (first packet p50 {np.median(fp):5.1f})')
         if W:
             st = np.array([r['stamp'] for r in v])
             line += f'  | write->stamp p50 {np.median(st):5.1f} | stamp->loopback p50 {np.median(lb - st):5.1f} ms'
         print(line)
+    spread = np.array([(r['t'] - r['tf']) * 1e3 for r in R])
+    print(f'all frames: first -> last RTP packet of a frame  p50 {np.median(spread):.2f}  p95 {np.percentile(spread, 95):.2f} ms')
     if W:
         d = np.array([(w['t'] - w['prft']) * 1e3 for w in W])
         print(f'all frames: prft stamp -> /ws/video arrival  p50 {np.median(d):.1f}  p95 {np.percentile(d, 95):.1f} ms')
