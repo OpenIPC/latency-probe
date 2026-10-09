@@ -33,12 +33,24 @@ def load(run):
 
 
 def luma(es, codec):
+    """Mean luma per access unit; NaN where one does not decode (a datagram
+    lost on the way in), so indices still line up with the R lines."""
     c = av.open(es, format=codec)
     out = []
-    for f in c.decode(video=0):
-        p = f.planes[0]
-        y = np.frombuffer(p, np.uint8).reshape(-1, p.line_size)[::4, :f.width:4]
-        out.append(float(y.mean()))
+    for pkt in c.demux(video=0):
+        if pkt.size == 0:
+            continue
+        try:
+            frames = pkt.decode()
+        except av.error.InvalidDataError:
+            frames = []
+        if not frames:
+            out.append(float('nan'))
+            continue
+        for f in frames:
+            p = f.planes[0]
+            y = np.frombuffer(p, np.uint8).reshape(-1, p.line_size)[::4, :f.width:4]
+            out.append(float(y.mean()))
     return out
 
 
@@ -58,7 +70,8 @@ def main():
     R = R[:n]
     period = float(np.median(np.diff([r['ts'] for r in R]))) / 90.0
     print(f'{info}  codec {codec}')
-    print(f'access units {len(R)}, ws fragments {len(W)}, steps {len(S)}, frame period {period:.2f} ms')
+    bad = sum(1 for r in R if r['y'] != r['y'])
+    print(f'access units {len(R)} ({bad} undecodable), ws fragments {len(W)}, steps {len(S)}, frame period {period:.2f} ms')
 
     wt = np.array([w['t'] for w in W]) if W else None
     res = []
@@ -67,12 +80,14 @@ def main():
         post = [r for r in R if r['t'] >= s['t0']][:15]
         if len(pre) < 3 or len(post) < 10:
             continue
-        y0 = float(np.median([r['y'] for r in pre]))
-        y1 = float(np.median([r['y'] for r in post[-4:]]))
+        y0 = float(np.nanmedian([r['y'] for r in pre]))
+        y1 = float(np.nanmedian([r['y'] for r in post[-4:]]))
         if abs(y1 - y0) < o.min_step:
             continue
         mid = (y0 + y1) / 2
-        first = next(r for r in post if (r['y'] - mid) * (y1 - y0) > 0)
+        first = next((r for r in post if (r['y'] - mid) * (y1 - y0) > 0), None)
+        if first is None:
+            continue
         d = dict(dir='up' if y1 > y0 else 'down', loopback=(first['t'] - s['t0']) * 1e3,
                  first_pkt=(first['tf'] - s['t0']) * 1e3)
         if W:

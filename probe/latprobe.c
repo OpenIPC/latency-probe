@@ -86,6 +86,8 @@ static void req(int s, const char *r)
 }
 
 static int hevc;
+static int udp_port; /* 0: RTP interleaved on the RTSP connection; else RTP to this loopback port */
+static int udp_fd = -1;
 
 static int rtsp_open(const char *path, const char *auth)
 {
@@ -108,11 +110,30 @@ static int rtsp_open(const char *path, const char *auth)
 	char *ctl = strstr(body, "m=video"), track[128] = "trackID=0";
 	if (ctl && (ctl = strstr(ctl, "a=control:")))
 		sscanf(ctl + 10, "%127[^\r\n]", track);
+	char transport[96] = "RTP/AVP/TCP;unicast;interleaved=0-1";
+	if (udp_port) {
+		udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+		/* FORCE: SO_RCVBUF is capped at net.core.rmem_max, 160 KB on these
+		 * cameras, and a frame sent while this process waits for the core
+		 * overflowed it. A lost datagram leaves a partial access unit,
+		 * which is skipped in the R lines but still decoded, and shifts
+		 * every later frame's luma onto the wrong timestamp. */
+		int big = 4 << 20;
+		if (setsockopt(udp_fd, SOL_SOCKET, SO_RCVBUFFORCE, &big, sizeof big))
+			setsockopt(udp_fd, SOL_SOCKET, SO_RCVBUF, &big, sizeof big);
+		struct sockaddr_in ua = {.sin_family = AF_INET, .sin_port = htons(udp_port),
+					 .sin_addr.s_addr = htonl(0x7f000001)};
+		if (bind(udp_fd, (void *)&ua, sizeof ua)) {
+			perror("bind udp");
+			exit(1);
+		}
+		snprintf(transport, sizeof transport, "RTP/AVP;unicast;client_port=%d-%d", udp_port, udp_port + 1);
+	}
 	if (!strncmp(track, "rtsp://", 7))
-		snprintf(r, sizeof r, "SETUP %s RTSP/1.0\r\nCSeq: 2\r\n%sTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n", track, au);
+		snprintf(r, sizeof r, "SETUP %s RTSP/1.0\r\nCSeq: 2\r\n%sTransport: %s\r\n\r\n", track, au, transport);
 	else
-		snprintf(r, sizeof r, "SETUP %s%s%s RTSP/1.0\r\nCSeq: 2\r\n%sTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n",
-			 base, base[strlen(base) - 1] == '/' ? "" : "/", track, au);
+		snprintf(r, sizeof r, "SETUP %s%s%s RTSP/1.0\r\nCSeq: 2\r\n%sTransport: %s\r\n\r\n",
+			 base, base[strlen(base) - 1] == '/' ? "" : "/", track, au, transport);
 	req(s, r);
 	char *se = strcasestr(hdr, "Session:");
 	if (se)
@@ -266,6 +287,18 @@ static void rtsp_data(int s)
 	rn -= o;
 }
 
+/* Drain to EAGAIN rather than one datagram per poll(). */
+static void udp_data(int s)
+{
+	static uint8_t d[65536];
+	for (;;) {
+		ssize_t n = recv(s, d, sizeof d, MSG_DONTWAIT);
+		if (n <= 0)
+			break;
+		rtsp_pkt(d, (int)n, now());
+	}
+}
+
 static void ws_data(int s)
 {
 	int r = read(s, wb + wn, sizeof wb - wn);
@@ -337,6 +370,7 @@ static void usage(void)
 		"  -s N       stream number: rtsp://127.0.0.1/stream=N and /ws/video?stream=N (default 0)\n"
 		"  -u B64     RTSP Basic auth, base64 of user:password (default none)\n"
 		"  -W         skip the /ws/video client\n"
+		"  -U PORT    take RTP over UDP on loopback PORT (and PORT+1) instead of interleaved TCP\n"
 		"  -o FILE    elementary stream output (default /tmp/latprobe.es)\n"
 		"  -p MS      minimum gap between steps in ms (default 800; a random 0-400 ms is added)\n");
 	exit(1);
@@ -346,7 +380,7 @@ int main(int argc, char **argv)
 {
 	int dur = 45, bus = 0, addr = 0x1a, hi = 0x3c, stream = 0, usews = 1, gap = 800, c;
 	const char *out = "/tmp/latprobe.es", *auth = "";
-	while ((c = getopt(argc, argv, "d:b:a:r:8v:s:u:Wo:p:h")) != -1) {
+	while ((c = getopt(argc, argv, "d:b:a:r:8v:s:u:WU:o:p:h")) != -1) {
 		switch (c) {
 		case 'd': dur = atoi(optarg); break;
 		case 'b': bus = atoi(optarg); break;
@@ -357,6 +391,7 @@ int main(int argc, char **argv)
 		case 's': stream = atoi(optarg); break;
 		case 'u': auth = optarg; break;
 		case 'W': usews = 0; break;
+		case 'U': udp_port = atoi(optarg); break;
 		case 'o': out = optarg; break;
 		case 'p': gap = atoi(optarg); break;
 		default: usage();
@@ -397,11 +432,13 @@ int main(int argc, char **argv)
 	int v = orig;
 	srand(time(0));
 	while (now() - start < dur) {
-		struct pollfd pf[2] = {{rs, POLLIN, 0}, {ws, POLLIN, 0}};
+		struct pollfd pf[3] = {{rs, POLLIN, 0}, {ws, POLLIN, 0}, {udp_fd, POLLIN, 0}};
 		int to = (int)((next - now()) * 1000);
 		if (to < 0)
 			to = 0;
-		poll(pf, usews ? 2 : 1, to);
+		poll(pf, 3, to);
+		if (pf[2].revents)
+			udp_data(udp_fd);
 		if (pf[0].revents)
 			rtsp_data(rs);
 		if (usews && pf[1].revents)

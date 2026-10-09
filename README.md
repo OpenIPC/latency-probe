@@ -58,13 +58,19 @@ all frames: prft stamp -> /ws/video arrival  p50 25.1  p95 26.2 ms
 ## Probe options
 
 ```
-latprobe [-d SEC] [-b BUS] [-a ADDR] [-r REG] [-8] [-v VAL] [-s N] [-u B64] [-W] [-o FILE] [-p MS]
+latprobe [-d SEC] [-b BUS] [-a ADDR] [-r REG] [-8] [-v VAL] [-s N] [-u B64] [-W] [-U PORT] [-o FILE] [-p MS]
   -d  run time, s (45)          -b  I2C bus (0)            -a  sensor address (0x1a)
   -r  register (0x30e8)         -8  8-bit register address -v  bright value (0x3c)
   -s  stream number (0)         -u  RTSP basic auth, base64 of user:pass
   -W  no /ws/video client       -o  stream file (/tmp/latprobe.es)
   -p  minimum ms between steps (800, plus a random 0-400)
+  -U  take RTP over UDP on loopback PORT and PORT+1 instead of interleaved TCP
 ```
+
+With `-U`, a datagram the probe misses leaves a partial frame behind and skews
+the scoring, so check that the camera's UDP `RcvbufErrors` in `/proc/net/snmp`
+did not move during the run. The probe forces a 4 MB receive buffer, which
+needs root, because `net.core.rmem_max` on these cameras is 160 KB.
 
 The probe reads the register at start and writes that value back on exit. For
 a sensor other than IMX335, use its analog-gain register (`-r`, `-a`, `-b`) and
