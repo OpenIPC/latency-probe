@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Arrival -> display latency of the camera's own WebUI player, in Chromium.
 
-usage: browser.py CAMERA_HOST [--mode mse|mse-chase|webrtc] [--seconds 45] [--headed]
+usage: browser.py CAMERA_HOST [--mode mse|mse-chase|webrtc] [--seconds 45] [--headed] [--js DIR]
 
 Loads the camera's /a/preview*.js into a page on the camera's origin and plays
 stream 0 the way the WebUI does. For every presented frame it records
@@ -16,7 +16,7 @@ Only the browser half is measured, so the network between the host and the
 camera does not enter the numbers. The display's own scan-out and panel lag
 are not included: headless Chromium has no monitor.
 """
-import argparse, asyncio, json
+import argparse, asyncio, json, os
 import numpy as np
 from playwright.async_api import async_playwright
 
@@ -87,6 +87,8 @@ def report(mode, r):
         b = [s.get('bufferedMs') for s in st if s.get('bufferedMs') is not None]
         if b:
             print(f'          buffered ahead of playhead: first {b[0]:.0f} ms, last {b[-1]:.0f} ms')
+        if st and st[-1].get('stalls') is not None:
+            print(f'          stalls {st[-1]["stalls"]}')
     elif st and st[-1].get('jbEmitted'):
         print(f'          jitter buffer delay avg {1000 * st[-1]["jbDelay"] / st[-1]["jbEmitted"]:.1f} ms')
 
@@ -100,7 +102,11 @@ async def run(o):
         await pg.goto(f'http://{o.camera}/favicon.ico')
         await pg.evaluate(HOOK)
         for js in ('preview-signal.js', 'preview.js', 'preview-webrtc.js'):
-            await pg.add_script_tag(url=f'http://{o.camera}/a/{js}')
+            local = os.path.join(o.js, js) if o.js else None
+            if local and os.path.exists(local):
+                await pg.add_script_tag(content=open(local).read())
+            else:
+                await pg.add_script_tag(url=f'http://{o.camera}/a/{js}')
         await pg.evaluate(START, o.mode)
         await asyncio.sleep(o.seconds)
         r = await pg.evaluate('() => ({arr: __arr, pres: __pres, stats: __stats})')
@@ -119,6 +125,8 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('camera')
     ap.add_argument('--mode', default='mse', choices=('mse', 'mse-chase', 'webrtc'))
+    ap.add_argument('--js', help='load the preview*.js found in this directory instead of the camera\'s '
+                    '(a WebUI checkout\'s www/a), to measure a player change before it ships')
     ap.add_argument('--seconds', type=int, default=45)
     ap.add_argument('--headed', action='store_true')
     ap.add_argument('--json')
