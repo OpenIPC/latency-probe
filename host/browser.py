@@ -94,6 +94,11 @@ def report(mode, r):
 
 
 async def run(o):
+    if o.js and not os.path.isfile(os.path.join(o.js, 'preview.js')):
+        # Falling back file by file is for a checkout that lacks a script it
+        # does not change; without preview.js, the player under test, a run
+        # would quietly measure the camera's own.
+        raise SystemExit(f'--js {o.js}: no preview.js there; refusing to measure the camera\'s player instead')
     async with async_playwright() as p:
         b = await p.chromium.launch(headless=not o.headed, args=['--autoplay-policy=no-user-gesture-required'])
         pg = await b.new_page()
