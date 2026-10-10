@@ -122,8 +122,11 @@ What these show:
   this.
 - **`isp.lowDelay` saves about one frame.** majestic switches it off while
   `motionDetect` is enabled, and it rules out `storageSaver` frame dropping.
-- **Slices don't help.** majestic sends whole frames, so splitting them into
-  slices doesn't let any part go out earlier.
+- **Slices don't make the camera send earlier.** On gk7205v300 and
+  hi3516av300 the encoder releases a frame's slices together, once the whole
+  frame is encoded. They can still cut latency at a receiver that decodes
+  slice by slice, such as the OpenIPC/research `vdec` FPV receiver, which
+  this harness does not measure: it times the last packet of each frame.
 - **Fewer pixels at a higher rate win.** Every per-frame stage shortens with
   the frame period. Run the encoder at the sensor rate: 720p120 encoded at
   60 fps is slower than encoded at 120.
